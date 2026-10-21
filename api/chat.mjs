@@ -1,3 +1,4 @@
+import { kv } from '@vercel/kv';
 import { leggiMenu, menuBase } from '../lib/menu.mjs';
 
 export const config = { runtime: 'edge' };
@@ -96,14 +97,40 @@ function filtraViniSeNecessario(vini, domanda) {
   return filtraVini(vini, q);
 }
 
+function espandiDomandaConContesto(domanda, storico) {
+  const q = String(domanda || '').trim();
+  if (!q) return domanda;
+
+  const precedente = Array.isArray(storico)
+    ? [...storico].reverse().find(m => m && m.role === 'user')
+    : null;
+  const testoPrecedente = precedente ? String(precedente.content || '') : '';
+  const prevLower = testoPrecedente.toLowerCase();
+
+  const shortColor = /^(rosso|rossi|bianco|bianchi|rosato|rosati|rose|rosè)$/i.test(q);
+  const shortRegion = /^(abruzzo|abruzzesi|francia|francesi|toscana|piemonte|veneto|friuli|lazio|puglia|sicilia|campania|lombardia|trentino)$/i.test(q);
+
+  const prevColore = /(rosso|rossi|bianco|bianchi|rosato|rosati|rose|rosè)/i.exec(prevLower)?.[1]?.toLowerCase();
+  const prevRegione = /(abruzzo|abruzzesi|francia|francesi|toscana|piemonte|veneto|friuli|lazio|puglia|sicilia|campania|lombardia|trentino)/i.exec(prevLower)?.[1]?.toLowerCase();
+
+  if (shortColor && prevRegione) {
+    return `vini ${q.toLowerCase()} ${prevRegione} disponibili oggi`;
+  }
+
+  if (shortRegion && prevColore) {
+    return `vini ${prevColore} ${q.toLowerCase()} disponibili oggi`;
+  }
+
+  return q;
+}
+
 // Trasforma il testo in audio (mp3 in base64) con la voce scelta
 async function sintetizza(testo, voceScelta, lingua, chiave) {
-  // La voce scelta deve appartenere alla lingua; altrimenti si usa quella predefinita della lingua
   const voceOk = VOCI[voceScelta] && VOCI[voceScelta][1] === lingua;
   const modello = voceOk
     ? VOCI[voceScelta][0]
     : (lingua === 'it' && process.env.DEEPGRAM_VOICE) || VOCI[VOCE_PREDEFINITA[lingua]][0];
-  // Toglie simboli, emoji e markdown che la sintesi vocale legge male
+
   const pulito = testo
     .replace(/[*_#`>~|]+/g, ' ')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, ' ')
@@ -144,6 +171,7 @@ export default async function handler(req) {
   const msg = MSG[lingua];
   const domanda = String(messaggio).slice(0, 500);
   const storico = Array.isArray(storicoClient) ? storicoClient.slice(-12) : [];
+  const domandaFinale = espandiDomandaConContesto(domanda, storico);
 
   const GROQ_API_KEY = process.env.GROQ_API_KEY;
   const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
@@ -154,7 +182,6 @@ export default async function handler(req) {
     return new Response(JSON.stringify({ risposta: msg.config }), { status: 500 });
   }
 
-  // Anteprima della voce scelta (frase fissa, nessuna chiamata a Groq)
   if (anteprima) {
     try {
       return json({ audio: await sintetizza(FRASE_PROVA[lingua], voceScelta, lingua, DEEPGRAM_API_KEY) });
@@ -165,7 +192,6 @@ export default async function handler(req) {
   }
   if (!domanda.trim()) return json({ risposta: msg.vuoto }, 400);
 
-  // 1. Leggi i dati in tempo reale da Edge Config
   let menu = null;
   let piattiDelGiorno = [];
   let esauritiVecchioSistema = [];
@@ -183,12 +209,10 @@ export default async function handler(req) {
 
     if (configResponse.ok) {
       const raw = await configResponse.json();
-      // L'API di gestione restituisce un array [{key, value}, ...]
       const data = Array.isArray(raw) ? Object.fromEntries(raw.map(i => [i.key, i.value])) : raw;
       menu = leggiMenu(data.menu);
       esauritiVecchioSistema = lista(data.piatti_esauriti);
       piattiDelGiorno = lista(data.piatti_del_giorno);
-      // compatibilità con la vecchia chiave a singolo piatto
       if (!piattiDelGiorno.length && typeof data.piatto_del_giorno === 'string' && data.piatto_del_giorno.trim()
           && !data.piatto_del_giorno.startsWith('Nessun piatto')) {
         piattiDelGiorno = [data.piatto_del_giorno.trim()];
@@ -200,14 +224,11 @@ export default async function handler(req) {
     console.error('Errore lettura Edge Config tramite Fetch:', error);
   }
 
-  // Se il menu non è ancora stato salvato da gestione.html, si usa quello di lib/menu.mjs
   if (!menu) menu = menuBase(esauritiVecchioSistema);
 
-  // 2. Separa disponibili e non disponibili
   const piattiEsauriti = menu.piatti.filter(p => !p.disponibile).map(p => p.nome);
   const viniEsauriti = menu.vini.filter(v => !v.disponibile).map(v => v.nome);
 
-  // I piatti del giorno entrano nella lista dei piatti, così il modello li "vede" come gli altri
   const vociGiorno = piattiDelGiorno.map(nome => ({
     nome, categoria: 'PIATTO DEL GIORNO', prezzo: 'chiedere al personale', allergeni: 'Chiedere al personale'
   }));
@@ -216,48 +237,43 @@ export default async function handler(req) {
     ...menu.piatti.filter(p => p.disponibile).map(({ nome, categoria, prezzo, allergeni }) => ({ nome, categoria, prezzo, allergeni })),
   ];
   const viniDisponibili = menu.vini.filter(v => v.disponibile);
-  const viniPerIlModello = filtraViniSeNecessario(viniDisponibili, domanda)
+  const viniPerIlModello = filtraViniSeNecessario(viniDisponibili, domandaFinale)
     .map(({ nome, tipo, regione, prezzo }) => ({ nome, tipo, regione, prezzo }));
 
   const systemPrompt = `
     Sei l'assistente virtuale del ristorante "Fonte La Tavola".
     Il tuo tono è cordiale, professionale e appassionato.
-    LINGUA: rispondi SEMPRE in ${LINGUE[lingua]}, qualunque sia la lingua del menu o della domanda. Mantieni in italiano i nomi dei piatti e dei vini (puoi aggiungere una breve spiegazione nella lingua richiesta, ma non cambiare i nomi dei vini e dei piatti).
+    LINGUA: rispondi SEMPRE in ${LINGUE[lingua]}, qualunque sia la lingua del menu o della domanda.
+    Mantieni in italiano i nomi dei piatti e dei vini.
 
-    ${piattiDelGiorno.length
-      ? `Oggi i piatti del giorno (fuori dal menu fisso) sono: ${piattiDelGiorno.join('; ')}.`
-      : 'Oggi non ci sono piatti del giorno.'}
+    ${piattiDelGiorno.length ? `Oggi i piatti del giorno sono: ${piattiDelGiorno.join('; ')}.` : 'Oggi non ci sono piatti del giorno.'}
 
     ATTENZIONE: i seguenti piatti NON SONO DISPONIBILI oggi: ${piattiEsauriti.length ? piattiEsauriti.join('; ') : 'Nessuno'}.
     I seguenti vini NON SONO DISPONIBILI oggi: ${viniEsauriti.length ? viniEsauriti.join('; ') : 'Nessuno'}.
-    Non proporli assolutamente. Se un cliente ti chiede un piatto o un vino che non è nella lista dei disponibili, scusati e suggerisci un'alternativa.
+    Non proporli assolutamente.
 
-    Ecco il menu dei piatti DISPONIBILI (prezzi in euro):
+    Ecco il menu dei piatti DISPONIBILI:
     ${JSON.stringify(piattiPerIlModello)}
 
-    Ecco i vini ATTUALMENTE DISPONIBILI (prezzi in euro):
+    Ecco i vini ATTUALMENTE DISPONIBILI:
     ${JSON.stringify(viniPerIlModello)}
 
     REGOLE FONDAMENTALI:
-    1. Se un cliente chiede informazioni su allergeni non presenti, digli, nella sua lingua, che per sicurezza deve chiedere sempre conferma al personale in sala.
-    2. Consiglia SOLO i vini presenti nella lista dei disponibili.
-    3. Sii conciso, massimo 2-3 frasi. Il testo verrà letto ad alta voce.
-    4. I piatti del giorno fanno parte del menu a tutti gli effetti. Quando il cliente chiede di un ingrediente o di una portata (es. "funghi", "carne", "primi"), considera TUTTI i piatti pertinenti nel menu.
-    5. Scrivi in italiano semplice e parlato: niente elenchi puntati, asterischi, emoji o simboli. Scrivi i prezzi con la parola euro (es. "12 euro").
-    6. La carta dei vini è ampia: consiglia al massimo 2 o 3 vini alla volta, adatti al piatto o alla richiesta, indicando il prezzo.
-    7. Se il cliente chiede un colore o una regione (es. rossi, bianchi, abruzzesi, francesi), usa SOLO i vini che rispettano il filtro richiesto nelle informazioni disponibili, senza inventare combinazioni.
-    8. Se un filtro non trova risultati, rispondi in modo netto: "non abbiamo vini ... disponibili oggi" e proponi comunque un'alternativa nella stessa categoria o tipologia presente nel menu.
-    9. Se la domanda fa riferimento alla conversazione precedente, considera anche lo storico della chat inviato dal client.
+    1. Consiglia SOLO i vini presenti nella lista dei disponibili.
+    2. Sii conciso, massimo 2-3 frasi.
+    3. Se un cliente chiede rossi, bianchi, rosati, abruzzesi o francesi, usa SOLO i vini coerenti con il filtro richiesto.
+    4. Se un filtro non trova risultati, rispondi in modo netto: "non abbiamo vini ... disponibili oggi" e proponi comunque un'alternativa valida.
+    5. Se la domanda fa riferimento alla conversazione precedente, considera anche lo storico della chat inviato dal client.
+    6. Se l'utente scrive solo un colore o una regione breve, interpreta il contesto della domanda precedente e completa la richiesta.
   `;
 
   try {
     const messages = [
       { role: 'system', content: systemPrompt },
       ...storico,
-      { role: 'user', content: domanda }
+      { role: 'user', content: domandaFinale }
     ];
 
-    // 3. Groq per il testo
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
@@ -274,7 +290,6 @@ export default async function handler(req) {
 
     const testoRisposta = groqData.choices[0].message.content;
 
-    // 4. Voce (solo se richiesta): se fallisce, il testo viene comunque restituito
     let audio = null;
     if (vuoleAudio) {
       try {
