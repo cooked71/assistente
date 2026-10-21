@@ -35,15 +35,15 @@
 
         .message { max-width: 85%; padding: 15px 18px; border-radius: 20px; font-size: 1rem; line-height: 1.5; animation: fadeIn 0.3s ease; }
         .bot { background-color: var(--bot-bg); border: 1px solid #E5E0D5; align-self: flex-start; border-bottom-left-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }
-        .user { background-color: var(--user-bg); color: var(--user-text); align-self: flex-end; border-bottom-right-radius: 4px; box-shadow: 0 2px 5px rgba(90,26,26,0.2); font-family: sans-serif; font-size: 0.95rem;}
+        .user { background-color: var(--user-bg); color: var(--user-text); align-self: flex-end; border-bottom-right-radius: 4px; box-shadow: 0 2px 5px rgba(90,26,26,0.2); font-family: sans-serif; }
 
-        .typing { font-style: italic; color: #888; font-size: 0.85rem; align-self: flex-start; display: none; font-family: sans-serif;}
+        .typing { font-style: italic; color: #888; font-size: 0.85rem; align-self: flex-start; display: none; font-family: sans-serif; }
 
         #input-area { background: white; padding: 15px; border-top: 1px solid #E5E0D5; display: flex; gap: 10px; padding-bottom: max(15px, env(safe-area-inset-bottom)); align-items: center; }
-        input[type="text"] { flex: 1; padding: 12px 15px; border: 1px solid #CCC; border-radius: 25px; font-size: 1rem; outline: none; transition: border 0.2s; font-family: sans-serif;}
+        input[type="text"] { flex: 1; padding: 12px 15px; border: 1px solid #CCC; border-radius: 25px; font-size: 1rem; outline: none; transition: border 0.2s; font-family: sans-serif; }
         input[type="text"]:focus { border-color: var(--primary); }
 
-        button { border: none; border-radius: 50%; width: 45px; height: 45px; font-size: 1.2rem; cursor: pointer; display: flex; justify-content: center; align-items: center; flex-shrink: 0; transition: all 0.2s; }
+        button { border: none; border-radius: 50%; width: 45px; height: 45px; font-size: 1.2rem; cursor: pointer; display: flex; justify-content: center; align-items: center; flex-shrink: 0; transition: transform 0.15s ease; }
         button:active { transform: scale(0.95); }
 
         #send-btn { background-color: var(--primary); color: white; }
@@ -156,6 +156,9 @@
             es: [['celeste', 'Celeste', 0], ['nestor', 'Nestor', 1]]
         };
 
+        const CHAT_KEY = 'chatStoricoFonteLaTavola';
+        const CHAT_LIMIT = 20;
+
         const chatContainer = document.getElementById('chat-container');
         const userInput = document.getElementById('user-input');
         const typingIndicator = document.getElementById('typing-indicator');
@@ -167,6 +170,21 @@
 
         function leggi(chiave, predefinito) { try { return localStorage.getItem(chiave) || predefinito; } catch (e) { return predefinito; } }
         function salva(chiave, valore) { try { localStorage.setItem(chiave, valore); } catch (e) {} }
+
+        function getStorico() {
+            try {
+                const storico = JSON.parse(localStorage.getItem(CHAT_KEY) || '[]');
+                return Array.isArray(storico) ? storico.slice(-CHAT_LIMIT) : [];
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function salvaStorico(storico) {
+            try {
+                localStorage.setItem(CHAT_KEY, JSON.stringify((Array.isArray(storico) ? storico : []).slice(-CHAT_LIMIT)));
+            } catch (e) {}
+        }
 
         // Lingua iniziale: quella scelta in precedenza, altrimenti quella del browser, altrimenti italiano
         function linguaIniziale() {
@@ -311,6 +329,7 @@
             if (testo === "") return;
 
             const vuoleAudio = modoSelect.value === 'sempre' || (modoSelect.value === 'microfono' && daVoce);
+            const storico = getStorico();
 
             aggiungiMessaggio(testo, 'user');
             userInput.value = '';
@@ -323,10 +342,17 @@
                 const response = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messaggio: testo, voce: voceSelect.value, audio: vuoleAudio, lingua })
+                    body: JSON.stringify({ messaggio: testo, voce: voceSelect.value, audio: vuoleAudio, lingua, storico })
                 });
 
                 const data = await response.json();
+                const nuovoStorico = [
+                    ...storico,
+                    { role: 'user', content: testo },
+                    { role: 'assistant', content: data.risposta || '' }
+                ].slice(-CHAT_LIMIT);
+                salvaStorico(nuovoStorico);
+
                 typingIndicator.style.display = 'none';
                 aggiungiMessaggio(data.risposta || t('errSconosciuto'), 'bot', data.audio);
                 if (data.audio) riproduci(data.audio);
