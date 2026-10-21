@@ -1,4 +1,3 @@
-import { kv } from '@vercel/kv';
 import { leggiMenu, menuBase } from '../lib/menu.mjs';
 
 export const config = { runtime: 'edge' };
