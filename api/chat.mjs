@@ -26,11 +26,11 @@ const FRASE_PROVA = {
   es: "Buenos días, soy el asistente de Fonte La Tavola. ¿En qué puedo ayudarle?",
 };
 const MSG = {
-  it: { config: 'Errore config: Chiavi API o Token mancanti su Vercel.', anteprima: 'Anteprima non disponibile.', vuoto: 'Scrivi o dì qualcosa e ti rispondo volentieri.', errore: 'Mi dispiace, ho avuto un problema tecnico. Puoi ripetere?' },
-  en: { config: 'Configuration error: API keys or tokens are missing on Vercel.', anteprima: 'Preview not available.', vuoto: 'Type or say something and I will gladly answer.', errore: 'Sorry, I had a technical problem. Could you repeat that?' },
-  fr: { config: 'Erreur de configuration : clés API ou jetons manquants sur Vercel.', anteprima: 'Aperçu indisponible.', vuoto: 'Écrivez ou dites quelque chose et je vous répondrai volontiers.', errore: "Désolé, j'ai eu un problème technique. Pouvez-vous répéter ?" },
-  de: { config: 'Konfigurationsfehler: API-Schlüssel oder Token fehlen auf Vercel.', anteprima: 'Vorschau nicht verfügbar.', vuoto: 'Schreiben oder sagen Sie etwas, ich antworte gern.', errore: 'Entschuldigung, es gab ein technisches Problem. Können Sie das wiederholen?' },
-  es: { config: 'Error de configuración: faltan claves API o tokens en Vercel.', anteprima: 'Vista previa no disponible.', vuoto: 'Escriba o diga algo y con gusto le respondo.', errore: 'Lo siento, he tenido un problema técnico. ¿Puede repetirlo?' },
+  it: { config: 'Errore config: Chiavi API o Token mancanti su Vercel.', anteprima: 'Anteprima non disponibile.', vuoto: 'Scrivi o dì qualcosa e ti rispondo volentieri.', errore: 'Mi dispiace, ho avuto un problema tecnico. Riprova tra qualche secondo.' },
+  en: { config: 'Configuration error: API keys or tokens are missing on Vercel.', anteprima: 'Preview not available.', vuoto: 'Type or say something and I will gladly answer.', errore: 'Sorry, I hit a technical issue. Please try again in a moment.' },
+  fr: { config: 'Erreur de configuration : clés API ou jetons manquants sur Vercel.', anteprima: 'Aperçu indisponible.', vuoto: 'Écrivez ou dites quelque chose et je vous répondrai volontiers.', errore: 'Désolé, j’ai eu un problème technique. Réessayez dans un instant.' },
+  de: { config: 'Konfigurationsfehler: API-Schlüssel oder Token fehlen auf Vercel.', anteprima: 'Vorschau nicht verfügbar.', vuoto: 'Schreiben oder sagen Sie etwas, ich antworte gern.', errore: 'Es tut mir leid, es gab ein technisches Problem. Bitte versuchen Sie es in einem Moment erneut.' },
+  es: { config: 'Error de configuración: faltan claves API o tokens en Vercel.', anteprima: 'Vista previa no disponible.', vuoto: 'Escriba o diga algo y con gusto le respondo.', errore: 'Lo siento, hubo un problema técnico. Inténtelo de nuevo en unos segundos.' },
 };
 
 const json = (oggetto, status = 200) =>
@@ -41,6 +41,72 @@ function inBase64(buffer) {
   let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(bin);
+}
+
+const MEMORIA_CHAT = new Map();
+
+function normalizzaTesto(t) {
+  return String(t || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[’‘`´]/g, "'")
+    .replace(/[^a-z0-9' ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function filtraVini(vini, domanda) {
+  const q = normalizzaTesto(domanda);
+  const vuoleRosso = /(rosso|rossi)/.test(q);
+  const vuoleBianco = /(bianco|bianchi)/.test(q);
+  const vuoleRosato = /(rosato|rose|rosè)/.test(q);
+  const vuoleFrancia = /(francia|francesi)/.test(q);
+  const vuoleAbruzzo = /(abruzzo|abruzzesi)/.test(q);
+
+  return vini.filter(v => {
+    const tipo = normalizzaTesto(v.tipo);
+    const regione = normalizzaTesto(v.regione);
+
+    let okTipo = true;
+    if (vuoleRosso) okTipo = okTipo && /(rosso|rossa)/.test(tipo);
+    if (vuoleBianco) okTipo = okTipo && /(bianco|bianchi)/.test(tipo);
+    if (vuoleRosato) okTipo = okTipo && /(rosato|rose|rosè)/.test(tipo);
+
+    const cercaColore = /(rosso|rossi|bianco|bianchi|rosato|rose|rosè)/.test(q);
+    if (cercaColore && !(
+      (vuoleRosso && /(rosso|rossa)/.test(tipo)) ||
+      (vuoleBianco && /(bianco|bianchi)/.test(tipo)) ||
+      (vuoleRosato && /(rosato|rose|rosè)/.test(tipo))
+    )) {
+      okTipo = false;
+    }
+
+    let okRegione = true;
+    if (vuoleFrancia) okRegione = okRegione && /francia/.test(regione);
+    if (vuoleAbruzzo) okRegione = okRegione && /abruzzo/.test(regione);
+
+    return okTipo && okRegione;
+  });
+}
+
+function filtraViniSeNecessario(vini, domanda) {
+  const q = normalizzaTesto(domanda);
+  if (!q) return vini;
+  const richiedeSpecifica = /(rosso|rossi|bianco|bianchi|rosato|rose|rosè|abruzzo|abruzzesi|francia|francesi|toscana|piemonte|veneto|friuli|lazio|puglia|sicilia|campania|lombardia|trentino)/.test(q);
+  if (!richiedeSpecifica) return vini;
+  return filtraVini(vini, q);
+}
+
+function salvaSessione(id, messaggi) {
+  if (!id) return;
+  MEMORIA_CHAT.set(String(id), messaggi.slice(-12));
+}
+
+function leggiSessione(id) {
+  if (!id) return [];
+  const stored = MEMORIA_CHAT.get(String(id));
+  return Array.isArray(stored) ? stored : [];
 }
 
 // Trasforma il testo in audio (mp3 in base64) con la voce scelta
@@ -79,15 +145,23 @@ export default async function handler(req) {
 
   let corpo = {};
   try { corpo = await req.json(); } catch (e) {}
-  const { messaggio = '', voce: voceScelta, audio: vuoleAudio = false, anteprima = false, lingua: linguaRichiesta } = corpo;
+  const {
+    messaggio = '',
+    voce: voceScelta,
+    audio: vuoleAudio = false,
+    anteprima = false,
+    lingua: linguaRichiesta,
+    sessionId
+  } = corpo;
   const lingua = LINGUE[linguaRichiesta] ? linguaRichiesta : 'it';
   const msg = MSG[lingua];
   const domanda = String(messaggio).slice(0, 500);
-  const GROQ_API_KEY = process.env.GROQ_API_KEY; 
+  const storico = leggiSessione(sessionId);
+  const GROQ_API_KEY = process.env.GROQ_API_KEY;
   const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
   const VERCEL_API_TOKEN = process.env.VERCEL_API_TOKEN;
   const EDGE_CONFIG_ID = process.env.EDGE_CONFIG_ID;
-  
+
   if (!GROQ_API_KEY || !DEEPGRAM_API_KEY || !VERCEL_API_TOKEN || !EDGE_CONFIG_ID) {
     return new Response(JSON.stringify({ risposta: msg.config }), { status: 500 });
   }
@@ -132,10 +206,10 @@ export default async function handler(req) {
         piattiDelGiorno = [data.piatto_del_giorno.trim()];
       }
     } else {
-      console.error("Risposta API Edge Config non valida:", configResponse.status);
+      console.error('Risposta API Edge Config non valida:', configResponse.status);
     }
   } catch (error) {
-    console.error("Errore lettura Edge Config tramite Fetch:", error);
+    console.error('Errore lettura Edge Config tramite Fetch:', error);
   }
 
   // Se il menu non è ancora stato salvato da gestione.html, si usa quello di lib/menu.mjs
@@ -147,52 +221,53 @@ export default async function handler(req) {
 
   // I piatti del giorno entrano nella lista dei piatti, così il modello li "vede" come gli altri
   const vociGiorno = piattiDelGiorno.map(nome => ({
-    nome, categoria: "PIATTO DEL GIORNO", prezzo: "chiedere al personale", allergeni: "Chiedere al personale"
+    nome, categoria: 'PIATTO DEL GIORNO', prezzo: 'chiedere al personale', allergeni: 'Chiedere al personale'
   }));
   const piattiPerIlModello = [
     ...vociGiorno,
     ...menu.piatti.filter(p => p.disponibile).map(({ nome, categoria, prezzo, allergeni }) => ({ nome, categoria, prezzo, allergeni })),
   ];
-  const viniPerIlModello = menu.vini
-    .filter(v => v.disponibile)
+  const viniDisponibili = menu.vini.filter(v => v.disponibile);
+  const viniPerIlModello = filtraViniSeNecessario(viniDisponibili, domanda)
     .map(({ nome, tipo, regione, prezzo }) => ({ nome, tipo, regione, prezzo }));
 
   const systemPrompt = `
-    Sei l'assistente virtuale del ristorante "Fonte La Tavola". 
+    Sei l'assistente virtuale del ristorante "Fonte La Tavola".
     Il tuo tono è cordiale, professionale e appassionato.
-    LINGUA: rispondi SEMPRE in ${LINGUE[lingua]}, qualunque sia la lingua del menu o della domanda. Mantieni in italiano i nomi dei piatti e dei vini (puoi aggiungere una breve spiegazione nella lingua del cliente). I prezzi sono in euro.
-    
+    LINGUA: rispondi SEMPRE in ${LINGUE[lingua]}, qualunque sia la lingua del menu o della domanda. Mantieni in italiano i nomi dei piatti e dei vini (puoi aggiungere una breve spiegazione nella lingua richiesta, ma non cambiare i nomi dei vini e dei piatti).
+
     ${piattiDelGiorno.length
       ? `Oggi i piatti del giorno (fuori dal menu fisso) sono: ${piattiDelGiorno.join('; ')}.`
       : 'Oggi non ci sono piatti del giorno.'}
-    
+
     ATTENZIONE: i seguenti piatti NON SONO DISPONIBILI oggi: ${piattiEsauriti.length ? piattiEsauriti.join('; ') : 'Nessuno'}.
     I seguenti vini NON SONO DISPONIBILI oggi: ${viniEsauriti.length ? viniEsauriti.join('; ') : 'Nessuno'}.
     Non proporli assolutamente. Se un cliente ti chiede un piatto o un vino che non è nella lista dei disponibili, scusati e suggerisci un'alternativa.
-    
+
     Ecco il menu dei piatti DISPONIBILI (prezzi in euro):
     ${JSON.stringify(piattiPerIlModello)}
-    
+
     Ecco i vini ATTUALMENTE DISPONIBILI (prezzi in euro):
     ${JSON.stringify(viniPerIlModello)}
 
-    REGOLE STRETTE SUI FILTRI (SEGUI ALLA LETTERA):
-    1. Quando un cliente chiede un attributo specifico (es. "rossi", "bianchi", "abruzzesi", "toscani", "passiti", "orange"), NON inventare e NON dedurre. 
-    2. Devi cercare quel termine (o la sua radice/lemma) ESCLUSIVAMENTE all'interno dei valori dei campi del database (es. "tipo", "regione"). 
-    3. Se il termine richiesto non corrisponde a nessun valore presente nei campi, significa che quel vino/piatto non esiste nel nostro database.
-    4. Se la richiesta combina più attributi (es. "rossi abruzzesi"), devi filtrare la lista applicando TUTTI i criteri contemporaneamente (tipo = Rosso E regione = Abruzzo).
-
-    
     REGOLE FONDAMENTALI:
     1. Se un cliente chiede informazioni su allergeni non presenti, digli, nella sua lingua, che per sicurezza deve chiedere sempre conferma al personale in sala.
     2. Consiglia SOLO i vini presenti nella lista dei disponibili.
     3. Sii conciso, massimo 2-3 frasi. Il testo verrà letto ad alta voce.
-    4. I piatti del giorno fanno parte del menu a tutti gli effetti. Quando il cliente chiede di un ingrediente o di una portata (es. "funghi", "carne", "primi"), considera TUTTI i piatti pertinenti nella lista, piatti del giorno compresi, e citali sempre per primi se pertinenti.
+    4. I piatti del giorno fanno parte del menu a tutti gli effetti. Quando il cliente chiede di un ingrediente o di una portata (es. "funghi", "carne", "primi"), considera TUTTI i piatti pertinenti nel menu.
     5. Scrivi in italiano semplice e parlato: niente elenchi puntati, asterischi, emoji o simboli. Scrivi i prezzi con la parola euro (es. "12 euro").
     6. La carta dei vini è ampia: consiglia al massimo 2 o 3 vini alla volta, adatti al piatto o alla richiesta, indicando il prezzo.
+    7. Se il cliente chiede un colore o una regione (es. rossi, bianchi, abruzzesi, francesi), usa SOLO i vini che rispettano il filtro richiesto nelle informazioni disponibili, senza inventare combinazioni.
+    8. Se un filtro non trova risultati, rispondi in modo netto: "non abbiamo vini ... disponibili oggi" e proponi comunque un'alternativa nella stessa categoria o tipologia presente nel menu.
   `;
 
   try {
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...storico,
+      { role: 'user', content: domanda }
+    ];
+
     // 3. Groq per il testo
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -200,14 +275,14 @@ export default async function handler(req) {
       body: JSON.stringify({
         model: 'openai/gpt-oss-20b',
         reasoning_effort: 'low',
-        messages: [ { role: 'system', content: systemPrompt }, { role: 'user', content: domanda } ],
+        messages,
         temperature: 0.5,
       })
     });
 
     const groqData = await groqResponse.json();
     if (!groqResponse.ok) throw new Error(groqData.error?.message || 'Errore Groq');
-    
+
     const testoRisposta = groqData.choices[0].message.content;
 
     // 4. Voce (solo se richiesta): se fallisce, il testo viene comunque restituito
@@ -219,6 +294,16 @@ export default async function handler(req) {
         console.error('Errore TTS:', e);
       }
     }
+
+    if (sessionId) {
+      const nuoviMessaggi = [
+        ...storico,
+        { role: 'user', content: domanda },
+        { role: 'assistant', content: testoRisposta }
+      ];
+      salvaSessione(sessionId, nuoviMessaggi);
+    }
+
     return json({ risposta: testoRisposta, audio });
 
   } catch (error) {
