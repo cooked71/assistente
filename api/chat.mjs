@@ -1,3 +1,4 @@
+import { kv } from '@vercel/kv';
 import { leggiMenu, menuBase } from '../lib/menu.mjs';
 
 export const config = { runtime: 'edge' };
@@ -42,8 +43,6 @@ function inBase64(buffer) {
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(bin);
 }
-
-const MEMORIA_CHAT = new Map();
 
 function normalizzaTesto(t) {
   return String(t || '')
@@ -98,15 +97,21 @@ function filtraViniSeNecessario(vini, domanda) {
   return filtraVini(vini, q);
 }
 
-function salvaSessione(id, messaggi) {
-  if (!id) return;
-  MEMORIA_CHAT.set(String(id), messaggi.slice(-12));
+async function leggiStorico(sessionId) {
+  if (!sessionId) return [];
+  try {
+    const storico = await kv.get(`chat:${sessionId}`);
+    return Array.isArray(storico) ? storico : [];
+  } catch {
+    return [];
+  }
 }
 
-function leggiSessione(id) {
-  if (!id) return [];
-  const stored = MEMORIA_CHAT.get(String(id));
-  return Array.isArray(stored) ? stored : [];
+async function salvaStorico(sessionId, messaggi) {
+  if (!sessionId) return;
+  try {
+    await kv.set(`chat:${sessionId}`, messaggi.slice(-12));
+  } catch {}
 }
 
 // Trasforma il testo in audio (mp3 in base64) con la voce scelta
@@ -156,7 +161,7 @@ export default async function handler(req) {
   const lingua = LINGUE[linguaRichiesta] ? linguaRichiesta : 'it';
   const msg = MSG[lingua];
   const domanda = String(messaggio).slice(0, 500);
-  const storico = leggiSessione(sessionId);
+  const storico = await leggiStorico(sessionId);
   const GROQ_API_KEY = process.env.GROQ_API_KEY;
   const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
   const VERCEL_API_TOKEN = process.env.VERCEL_API_TOKEN;
@@ -259,6 +264,7 @@ export default async function handler(req) {
     6. La carta dei vini è ampia: consiglia al massimo 2 o 3 vini alla volta, adatti al piatto o alla richiesta, indicando il prezzo.
     7. Se il cliente chiede un colore o una regione (es. rossi, bianchi, abruzzesi, francesi), usa SOLO i vini che rispettano il filtro richiesto nelle informazioni disponibili, senza inventare combinazioni.
     8. Se un filtro non trova risultati, rispondi in modo netto: "non abbiamo vini ... disponibili oggi" e proponi comunque un'alternativa nella stessa categoria o tipologia presente nel menu.
+    9. Se la domanda fa riferimento alla conversazione precedente, considera anche lo storico della chat inviato dal client.
   `;
 
   try {
@@ -295,14 +301,12 @@ export default async function handler(req) {
       }
     }
 
-    if (sessionId) {
-      const nuoviMessaggi = [
-        ...storico,
-        { role: 'user', content: domanda },
-        { role: 'assistant', content: testoRisposta }
-      ];
-      salvaSessione(sessionId, nuoviMessaggi);
-    }
+    const nuoviMessaggi = [
+      ...storico,
+      { role: 'user', content: domanda },
+      { role: 'assistant', content: testoRisposta }
+    ];
+    await salvaStorico(sessionId, nuoviMessaggi);
 
     return json({ risposta: testoRisposta, audio });
 
