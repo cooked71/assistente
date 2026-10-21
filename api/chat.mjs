@@ -1,18 +1,30 @@
-export const config = { runtime: 'edge' };
+export const config = { runtime: 'nodejs' };
 
-export default async function handler(req) {
+// Helper per fetch con timeout (evita che una chiamata lenta blocchi tutto)
+async function fetchWithTimeout(url, options, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Metodo non consentito' }), { status: 405 });
+    return res.status(405).json({ error: 'Metodo non consentito' });
   }
 
-  const { messaggio } = await req.json();
+  const { messaggio } = req.body;
   const GROQ_API_KEY = process.env.GROQ_API_KEY; 
   const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
   const VERCEL_API_TOKEN = process.env.VERCEL_API_TOKEN;
   const EDGE_CONFIG_ID = process.env.EDGE_CONFIG_ID;
   
   if (!GROQ_API_KEY || !DEEPGRAM_API_KEY || !VERCEL_API_TOKEN || !EDGE_CONFIG_ID) {
-    return new Response(JSON.stringify({ risposta: 'Errore config: Chiavi API o Token mancanti su Vercel.' }), { status: 500 });
+    return res.status(500).json({ risposta: 'Errore config: Chiavi API o Token mancanti su Vercel.' });
   }
 
   // 1. Leggi TUTTI i dati in tempo reale da Global Config
@@ -23,13 +35,13 @@ export default async function handler(req) {
   let piattoDelGiorno = "Nessun piatto del giorno configurato";
 
   try {
-    const configResponse = await fetch(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items`, {
+    const configResponse = await fetchWithTimeout(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items`, {
       headers: { 
         'Authorization': `Bearer ${VERCEL_API_TOKEN}`,
         'Content-Type': 'application/json'
       },
       cache: 'no-store' 
-    });
+    }, 5000);
 
     if (configResponse.ok) {
         const raw = await configResponse.json();
@@ -42,14 +54,15 @@ export default async function handler(req) {
         piattoDelGiorno = data.piatto_del_giorno || piattoDelGiorno;
     }
   } catch (error) {
-    console.error("Errore lettura Edge Config:", error);
+    console.error("Errore lettura Edge Config:", error.message);
+    // Fallback: se Global Config fallisce, usa liste vuote (l'AI dirà che non c'è nulla)
   }
 
   // 2. FASE DI ESTRAZIONE (L'AI estrae le parole chiave)
   let paroleChiave = [];
   
   try {
-    const estrazioneResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const estrazioneResponse = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -68,56 +81,50 @@ export default async function handler(req) {
           { role: 'user', content: messaggio }
         ]
       })
-    });
+    }, 8000);
 
     if (estrazioneResponse.ok) {
         const estrazioneData = await estrazioneResponse.json();
-        // Doppio controllo di sicurezza sul formato della risposta
         if (estrazioneData.choices && estrazioneData.choices[0] && estrazioneData.choices[0].message) {
             try {
                 const parsed = JSON.parse(estrazioneData.choices[0].message.content);
                 paroleChiave = parsed.keywords || [];
             } catch (parseError) {
-                console.error("Errore parsing JSON estrazione:", parseError);
+                console.error("Errore parsing JSON estrazione:", parseError.message);
             }
         }
     }
   } catch (e) {
-    console.error("Errore estrazione parole chiave:", e);
+    console.error("Errore estrazione parole chiave:", e.message);
   }
 
   // FALLBACK: Se l'estrazione fallisce o restituisce un array vuoto, 
-  // usiamo le parole del messaggio originale (filtrando quelle troppo corte)
+  // usiamo le parole del messaggio originale
   if (!paroleChiave || paroleChiave.length === 0) {
       paroleChiave = messaggio.toLowerCase().split(/\s+/).filter(w => w.length > 2);
   }
 
-  // 3. FASE DI FILTRAGGIO (Ricerca LIKE su tutti i campi)
-  
+  // 3. FASE DI FILTRAGGIO
   function contieneParola(oggetto, parola) {
     if (!oggetto) return false;
     const stringaOggetto = JSON.stringify(oggetto).toLowerCase();
     return stringaOggetto.includes(parola.toLowerCase());
   }
 
-  // Filtro Piatti
   let piattiFiltrati = piattiBase.filter(p => {
     if (piattiEsauriti.some(e => p.nome.toLowerCase().includes(e.toLowerCase()))) return false;
     return paroleChiave.some(k => contieneParola(p, k));
   });
 
-  // Se la ricerca non ha trovato piatti, ma l'utente non ha chiesto esplicitamente vini, mostra tutti i piatti
   if (piattiFiltrati.length === 0 && !messaggio.toLowerCase().includes('vino')) {
       piattiFiltrati = piattiBase.filter(p => !piattiEsauriti.some(e => p.nome.toLowerCase().includes(e.toLowerCase())));
   }
 
-  // Filtro Vini
   let viniFiltrati = viniBase.filter(v => {
     if (!v.disponibile || viniEsauriti.includes(v.nome)) return false;
     return paroleChiave.some(k => contieneParola(v, k));
   });
 
-  // Se la ricerca non ha trovato vini, ma l'utente non ha chiesto esplicitamente piatti, mostra tutti i vini
   if (viniFiltrati.length === 0 && !messaggio.toLowerCase().includes('piatto')) {
       viniFiltrati = viniBase.filter(v => v.disponibile === true && !viniEsauriti.includes(v.nome));
   }
@@ -143,7 +150,7 @@ export default async function handler(req) {
   `;
 
   try {
-    const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const groqResponse = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -152,7 +159,7 @@ export default async function handler(req) {
         messages: [ { role: 'system', content: systemPrompt }, { role: 'user', content: messaggio } ],
         temperature: 0.5,
       })
-    });
+    }, 10000);
 
     const groqData = await groqResponse.json();
     if (!groqResponse.ok) throw new Error(groqData.error?.message || 'Errore Groq');
@@ -161,28 +168,27 @@ export default async function handler(req) {
 
     const deepgramUrl = 'https://api.deepgram.com/v1/speak?model=aura-2-livia-it';
     
-    const ttsResponse = await fetch(deepgramUrl, {
+    const ttsResponse = await fetchWithTimeout(deepgramUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Token ${DEEPGRAM_API_KEY}`, 
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ text: testoRisposta })
-    });
+    }, 10000);
 
     if (!ttsResponse.ok) {
       const ttsError = await ttsResponse.json();
       throw new Error(ttsError.err_msg || ttsError.error || 'Errore TTS Deepgram');
     }
 
-    return new Response(ttsResponse.body, {
-      headers: { 'Content-Type': 'audio/mpeg' }
-    });
+    // Invia l'audio come buffer
+    const audioBuffer = await ttsResponse.arrayBuffer();
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.send(Buffer.from(audioBuffer));
 
   } catch (error) {
-    console.error('Errore:', error);
-    return new Response(JSON.stringify({ risposta: "Mi dispiace, ho avuto un problema tecnico. Puoi ripetere?" }), { 
-        status: 200, headers: { 'Content-Type': 'application/json' } 
-    });
+    console.error('Errore finale:', error.message);
+    return res.status(200).json({ risposta: "Mi dispiace, ho avuto un problema tecnico. Puoi ripetere?" });
   }
 }
