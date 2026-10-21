@@ -1,4 +1,3 @@
-import { kv } from '@vercel/kv';
 import { leggiMenu, menuBase } from '../lib/menu.mjs';
 
 export const config = { runtime: 'edge' };
@@ -97,23 +96,6 @@ function filtraViniSeNecessario(vini, domanda) {
   return filtraVini(vini, q);
 }
 
-async function leggiStorico(sessionId) {
-  if (!sessionId) return [];
-  try {
-    const storico = await kv.get(`chat:${sessionId}`);
-    return Array.isArray(storico) ? storico : [];
-  } catch {
-    return [];
-  }
-}
-
-async function salvaStorico(sessionId, messaggi) {
-  if (!sessionId) return;
-  try {
-    await kv.set(`chat:${sessionId}`, messaggi.slice(-12));
-  } catch {}
-}
-
 // Trasforma il testo in audio (mp3 in base64) con la voce scelta
 async function sintetizza(testo, voceScelta, lingua, chiave) {
   // La voce scelta deve appartenere alla lingua; altrimenti si usa quella predefinita della lingua
@@ -156,12 +138,13 @@ export default async function handler(req) {
     audio: vuoleAudio = false,
     anteprima = false,
     lingua: linguaRichiesta,
-    sessionId
+    storico: storicoClient = []
   } = corpo;
   const lingua = LINGUE[linguaRichiesta] ? linguaRichiesta : 'it';
   const msg = MSG[lingua];
   const domanda = String(messaggio).slice(0, 500);
-  const storico = await leggiStorico(sessionId);
+  const storico = Array.isArray(storicoClient) ? storicoClient.slice(-12) : [];
+
   const GROQ_API_KEY = process.env.GROQ_API_KEY;
   const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
   const VERCEL_API_TOKEN = process.env.VERCEL_API_TOKEN;
@@ -300,13 +283,6 @@ export default async function handler(req) {
         console.error('Errore TTS:', e);
       }
     }
-
-    const nuoviMessaggi = [
-      ...storico,
-      { role: 'user', content: domanda },
-      { role: 'assistant', content: testoRisposta }
-    ];
-    await salvaStorico(sessionId, nuoviMessaggi);
 
     return json({ risposta: testoRisposta, audio });
 
