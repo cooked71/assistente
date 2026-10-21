@@ -22,7 +22,7 @@
         li .nome { flex: 1; min-width: 0; }
         li .nome small { display: block; color: #888; }
         li.off .nome { color: #aaa; text-decoration: line-through; }
-        li .btns { display: flex; gap: 6px; flex-shrink: 0; }
+        li .btns { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; max-width: 55%; }
         li button { padding: 6px 10px; font-size: 0.8rem; }
         button.ok { background: #2e7d32; }
         button.no { background: #b23b3b; }
@@ -326,7 +326,8 @@
                         ['Modifica', 'grigio', () => apriForm(tipo, v.id)],
                         v.disponibile
                             ? ['Esaurito', 'no', () => esegui({ azione: 'disponibilita', tipo, id: v.id, disponibile: false })]
-                            : ['Ripristina', 'ok', () => esegui({ azione: 'disponibilita', tipo, id: v.id, disponibile: true })]
+                            : ['Ripristina', 'ok', () => esegui({ azione: 'disponibilita', tipo, id: v.id, disponibile: true })],
+                        ['🗑 Elimina', 'no', () => eliminaVoce(tipo, v)]
                     ], !v.disponibile));
                 });
                 det.appendChild(ul);
@@ -381,6 +382,13 @@
                 voce.allergeni = $('f-allergeni').value;
             }
             if (await esegui({ azione: 'salva_voce', tipo, voce })) $('dlg').close();
+        }
+
+        // Elimina direttamente dalla lista del menu (con conferma)
+        async function eliminaVoce(tipo, v) {
+            const cosa = tipo === 'vino' ? 'il vino' : 'il piatto';
+            if (!confirm(`Eliminare definitivamente ${cosa} "${v.nome}" dal menu?`)) return;
+            await esegui({ azione: 'elimina_voce', tipo, id: v.id });
         }
 
         async function eliminaForm() {
