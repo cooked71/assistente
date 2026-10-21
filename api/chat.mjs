@@ -175,6 +175,13 @@ export default async function handler(req) {
     
     Ecco i vini ATTUALMENTE DISPONIBILI (prezzi in euro):
     ${JSON.stringify(viniPerIlModello)}
+
+    REGOLE STRETTE SUI FILTRI (SEGUI ALLA LETTERA):
+    1. Quando un cliente chiede un attributo specifico (es. "rossi", "bianchi", "abruzzesi", "toscani", "passiti", "orange"), NON inventare e NON dedurre. 
+    2. Devi cercare quel termine (o la sua radice/lemma) ESCLUSIVAMENTE all'interno dei valori dei campi del database (es. "tipo", "regione"). 
+    3. Se il termine richiesto non corrisponde a nessun valore presente nei campi, significa che quel vino/piatto non esiste nel nostro database.
+    4. Se la richiesta combina più attributi (es. "rossi abruzzesi"), devi filtrare la lista applicando TUTTI i criteri contemporaneamente (tipo = Rosso E regione = Abruzzo).
+
     
     REGOLE FONDAMENTALI:
     1. Se un cliente chiede informazioni su allergeni non presenti, digli, nella sua lingua, che per sicurezza deve chiedere sempre conferma al personale in sala.
