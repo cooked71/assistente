@@ -45,8 +45,7 @@ export default async function handler(req) {
     console.error("Errore lettura Edge Config:", error);
   }
 
-  // 2. FASE DI ESTRAZIONE (L'AI estrae le parole chiave ESATTE)
-  // Chiediamo all'AI di estrarre le parole chiave dalla domanda, senza preimpostare campi
+  // 2. FASE DI ESTRAZIONE (L'AI estrae le parole chiave)
   let paroleChiave = [];
   
   try {
@@ -71,59 +70,59 @@ export default async function handler(req) {
       })
     });
 
-    const estrazioneData = await estrazioneResponse.json();
-    if (estrazioneResponse.ok && estrazioneData.choices[0].message.content) {
-        const parsed = JSON.parse(estrazioneData.choices[0].message.content);
-        paroleChiave = parsed.keywords || [];
+    if (estrazioneResponse.ok) {
+        const estrazioneData = await estrazioneResponse.json();
+        // Doppio controllo di sicurezza sul formato della risposta
+        if (estrazioneData.choices && estrazioneData.choices[0] && estrazioneData.choices[0].message) {
+            try {
+                const parsed = JSON.parse(estrazioneData.choices[0].message.content);
+                paroleChiave = parsed.keywords || [];
+            } catch (parseError) {
+                console.error("Errore parsing JSON estrazione:", parseError);
+            }
+        }
     }
   } catch (e) {
     console.error("Errore estrazione parole chiave:", e);
   }
 
-  // Se l'estrazione fallisce o non trova parole, passiamo tutto (fallback)
-  if (paroleChiave.length === 0) {
-      paroleChiave = messaggio.toLowerCase().split(' ').filter(w => w.length > 2);
+  // FALLBACK: Se l'estrazione fallisce o restituisce un array vuoto, 
+  // usiamo le parole del messaggio originale (filtrando quelle troppo corte)
+  if (!paroleChiave || paroleChiave.length === 0) {
+      paroleChiave = messaggio.toLowerCase().split(/\s+/).filter(w => w.length > 2);
   }
 
   // 3. FASE DI FILTRAGGIO (Ricerca LIKE su tutti i campi)
   
-  // Funzione di supporto per cercare una parola in un oggetto (simula il LIKE SQL)
   function contieneParola(oggetto, parola) {
     if (!oggetto) return false;
-    // Converte l'oggetto in una stringa JSON e cerca la parola
     const stringaOggetto = JSON.stringify(oggetto).toLowerCase();
     return stringaOggetto.includes(parola.toLowerCase());
   }
 
-  // Filtro Piatti: un piatto passa se CONTIENE ALMENO UNA delle parole chiave
+  // Filtro Piatti
   let piattiFiltrati = piattiBase.filter(p => {
-    // Rimuovi esauriti
     if (piattiEsauriti.some(e => p.nome.toLowerCase().includes(e.toLowerCase()))) return false;
-    
-    // Se non ci sono parole chiave rilevanti, mostra tutto
-    // Altrimenti, mostra solo se almeno una parola chiave è presente nel piatto
     return paroleChiave.some(k => contieneParola(p, k));
   });
 
-  // Se la ricerca non ha trovato piatti (perché magari l'utente ha chiesto solo vini), passiamo tutti i piatti
+  // Se la ricerca non ha trovato piatti, ma l'utente non ha chiesto esplicitamente vini, mostra tutti i piatti
   if (piattiFiltrati.length === 0 && !messaggio.toLowerCase().includes('vino')) {
       piattiFiltrati = piattiBase.filter(p => !piattiEsauriti.some(e => p.nome.toLowerCase().includes(e.toLowerCase())));
   }
 
-  // Filtro Vini: un vino passa se CONTIENE ALMENO UNA delle parole chiave
+  // Filtro Vini
   let viniFiltrati = viniBase.filter(v => {
-    // Rimuovi esauriti e non disponibili
     if (!v.disponibile || viniEsauriti.includes(v.nome)) return false;
-    
     return paroleChiave.some(k => contieneParola(v, k));
   });
 
-  // Se la ricerca non ha trovato vini (perché magari l'utente ha chiesto solo piatti), passiamo tutti i vini
+  // Se la ricerca non ha trovato vini, ma l'utente non ha chiesto esplicitamente piatti, mostra tutti i vini
   if (viniFiltrati.length === 0 && !messaggio.toLowerCase().includes('piatto')) {
       viniFiltrati = viniBase.filter(v => v.disponibile === true && !viniEsauriti.includes(v.nome));
   }
 
-  // 4. FASE DI RISPOSTA (L'AI fa il "Cameriere")
+  // 4. FASE DI RISPOSTA
   const systemPrompt = `
     Sei l'assistente virtuale del ristorante "Fonte La Tavola". 
     Il tuo tono è cordiale, professionale e appassionato.
